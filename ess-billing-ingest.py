@@ -4,7 +4,9 @@ import requests
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch.helpers import BulkIndexError
 from time import time, sleep
-from datetime import datetime
+from datetime import datetime, timedelta
+
+
 import sys
 import json
 
@@ -15,7 +17,9 @@ connect to Elastic Cloud Billing API to pull down detailed cluster billing metri
 send them to an elasticsearch cluster for magic
 https://www.elastic.co/guide/en/cloud/current/Billing_Costs_Analysis.html
 '''
-
+presentday = datetime.now()
+beforeyesterday = presentday - timedelta(days=1)
+yesterday = presentday - timedelta(days=1)
 
 def ess_connect(cluster_id, cluster_api_key):
     '''
@@ -44,7 +48,10 @@ def get_billing_api(endpoint, billing_api_key, **kwargs):
     response = requests.get(
         url = f'https://{ess_api}{endpoint}',
         headers = {'Authorization': billing_api_key},
-        params = params
+        params = {
+            "from": beforeyesterday.strftime("%Y-%m-%d"),
+            "to": yesterday.strftime("%Y-%m-%d")
+        }
     )
 
     return response
@@ -214,9 +221,10 @@ def pull_deployment_charts(org_id, billing_api_key, deployment_charts_index, dep
     # get charts
     deployment_id = deployment['deployment_id']
     charts_endp = f'/api/v1/billing/costs/{org_id}/deployments/{deployment_id}/charts'
-    response = get_billing_api(charts_endp, billing_api_key, params={"from": "2023-08-01"})
+    response = get_billing_api(charts_endp, billing_api_key)
 
     if response.status_code != 200:
+        print(response.json())
         raise
         #TODO something else
     else:
@@ -341,6 +349,8 @@ def main(billing_api_key, es, organization_delay, org_summary_index, deployment_
                 print(json.dumps(bie.errors))
                 sys.exit(0)
             logging.info('Bulk indexing complete')
+        
+        break
 
         # don't spin
         sleep(1)
