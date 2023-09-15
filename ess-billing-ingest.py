@@ -18,7 +18,7 @@ send them to an elasticsearch cluster for magic
 https://www.elastic.co/guide/en/cloud/current/Billing_Costs_Analysis.html
 '''
 presentday = datetime.now()
-beforeyesterday = presentday - timedelta(days=1)
+beforeyesterday = presentday - timedelta(days=10)
 yesterday = presentday - timedelta(days=1)
 
 def ess_connect(cluster_id, cluster_api_key):
@@ -48,10 +48,7 @@ def get_billing_api(endpoint, billing_api_key, **kwargs):
     response = requests.get(
         url = f'https://{ess_api}{endpoint}',
         headers = {'Authorization': billing_api_key},
-        params = {
-            "from": beforeyesterday.strftime("%Y-%m-%d"),
-            "to": yesterday.strftime("%Y-%m-%d")
-        }
+        params=kwargs
     )
 
     return response
@@ -61,7 +58,6 @@ def normalize_cost(d):
     d["costs"] = {}
     d["costs"]["total"] = costs["total"]
 
-
     for dim in costs["dimensions"]:
         d["costs"][dim["type"]] = dim["cost"]
 
@@ -69,6 +65,10 @@ def normalize_cost(d):
     d["costs"]["storage"] = d["costs"]["storage_api"] + d["costs"]["storage_bytes"]
     d["costs"]["data_transfer"] = d["costs"]["data_in"] + d["costs"]["data_out"] + d["costs"]["data_internode"]
     d["costs"]["data_transfer_and_storage"] = d["costs"]["storage"] + d["costs"]["data_transfer"]
+
+def normalize_period(item):
+    item["gte"] = item.pop("start")
+    item["lte"] = item.pop("end")
 
 def pull_org_id(billing_api_key):
     '''
@@ -90,7 +90,7 @@ def pull_org_id(billing_api_key):
         logging.info(rj)
         return rj['id']
 
-def pull_org_summary(org_id, org_summary_index, now):
+def pull_org_summary(org_id, org_summary_index, now, **kwargs):
     '''
     Get org billing summary including balance
     '''
@@ -98,7 +98,7 @@ def pull_org_summary(org_id, org_summary_index, now):
     logging.info(f'starting pull_org_summary')
 
     org_summary_endp = f'/api/v1/billing/costs/{org_id}'
-    response = get_billing_api(org_summary_endp, billing_api_key)
+    response = get_billing_api(org_summary_endp, billing_api_key, **kwargs)
 
     if response.status_code != 200:
         raise
@@ -116,7 +116,7 @@ def pull_org_summary(org_id, org_summary_index, now):
         logging.debug(rj)
         return rj
 
-def pull_deployments( org_id, billing_api_key, deployment_index, now):
+def pull_deployments( org_id, billing_api_key, deployment_index, now, **kwargs):
     '''
     Pull list of deployments from /api/v1/billing/costs/<org_id>/deployments
     return list of deployments payload
@@ -126,7 +126,7 @@ def pull_deployments( org_id, billing_api_key, deployment_index, now):
 
     # get deployments
     deployments_endp = f'/api/v1/billing/costs/{org_id}/deployments'
-    response = get_billing_api(deployments_endp, billing_api_key)
+    response = get_billing_api(deployments_endp, billing_api_key, **kwargs)
 
     if response.status_code != 200:
         logging.error(response.status_code)
@@ -143,6 +143,7 @@ def pull_deployments( org_id, billing_api_key, deployment_index, now):
             d['@timestamp'] = now
 
             normalize_cost(d)
+            normalize_period(d["period"])
 
 
             payload.append(d)
@@ -154,7 +155,7 @@ def pull_deployments( org_id, billing_api_key, deployment_index, now):
         return (payload)
 
 
-def pull_deployment_itemized(org_id, billing_api_key, deployment_itemized_index, deployment, now):
+def pull_deployment_itemized(org_id, billing_api_key, deployment_itemized_index, deployment, now, **kwargs):
     '''
     Get the itemized billing for a deployment
     '''
@@ -164,7 +165,10 @@ def pull_deployment_itemized(org_id, billing_api_key, deployment_itemized_index,
     # get itemized
     deployment_id = deployment['deployment_id']
     itemized_endp = f'/api/v1/billing/costs/{org_id}/deployments/{deployment_id}/items'
-    response = get_billing_api(itemized_endp, billing_api_key)
+
+    print(kwargs)
+
+    response = get_billing_api(itemized_endp, billing_api_key, **kwargs)
 
     if response.status_code != 200:
         raise
@@ -179,7 +183,9 @@ def pull_deployment_itemized(org_id, billing_api_key, deployment_itemized_index,
                 'deployment_name' : deployment['deployment_name'],
                 'api' : itemized_endp,
                 '_index' : deployment_itemized_index,
-                '@timestamp' : now
+                '@timestamp' : now,
+                # TODO: DELETE ME
+                **kwargs
                 }
 
 
@@ -197,8 +203,7 @@ def pull_deployment_itemized(org_id, billing_api_key, deployment_itemized_index,
         for bt in ('data_transfer_and_storage', 'resources'):
             for item in rj[bt]:
                 if bt == "resources":
-                    item["period"]["gte"] = item["period"].pop("start")
-                    item["period"]["lte"] = item["period"].pop("end")
+                    normalize_period(item["period"])
                 item['cloud.provider'] = item['sku'].split('.')[0]
                 item['bill.type'] = bt
                 item.update(common)
@@ -211,7 +216,7 @@ def pull_deployment_itemized(org_id, billing_api_key, deployment_itemized_index,
 
 
 
-def pull_deployment_charts(org_id, billing_api_key, deployment_charts_index, deployment, now):
+def pull_deployment_charts(org_id, billing_api_key, deployment_charts_index, deployment, now, **kwargs):
     '''
     Get the charts billing for a deployment
     '''
@@ -221,7 +226,7 @@ def pull_deployment_charts(org_id, billing_api_key, deployment_charts_index, dep
     # get charts
     deployment_id = deployment['deployment_id']
     charts_endp = f'/api/v1/billing/costs/{org_id}/deployments/{deployment_id}/charts'
-    response = get_billing_api(charts_endp, billing_api_key)
+    response = get_billing_api(charts_endp, billing_api_key, **kwargs)
 
     if response.status_code != 200:
         print(response.json())
@@ -240,23 +245,30 @@ def pull_deployment_charts(org_id, billing_api_key, deployment_charts_index, dep
                 'deployment_name' : deployment['deployment_name'],
                 'api' : charts_endp,
                 '_index' : deployment_charts_index,
+                # TODO DELETE ME
+                **kwargs
                 }
         for r in rj["data"]:
 
             element = {
                 "@timestamp": r["timestamp"],
-                "read_timestamp": now
+                "read_timestamp": now,
+                "costs": {}
+
             }
 
             total = 0
             for v in r["values"]:
                 id = v["id"]
-                name = v["name"]
                 value = v["value"]
-                element[id + "_value"] = value
+                element["costs"][id] = value
                 total += value
 
-            element["total"] = total
+            # Normalize the data
+            element["costs"]["data_transfer_and_storage"] = element["costs"]["storage"] + element["costs"]["data_transfer"]
+
+            element["costs"]["total"] = total
+
 
             payload.append(
                 {
@@ -270,6 +282,70 @@ def pull_deployment_charts(org_id, billing_api_key, deployment_charts_index, dep
 
     logging.debug(payload)
     return payload
+
+
+def fetch_historical_data(billing_api_key, es, org_summary_index, deployment_index, deployment_itemized_index, start_point, granularity):
+    current_date = start_point 
+    end_date = current_date + granularity
+    now = datetime.utcnow()
+    org_id = pull_org_id(billing_api_key)
+    iteration = 0
+
+    # deployment_charts_elapsed = time() - deployment_charts_last_run
+    # if deployment_charts_elapsed >= deployment_charts_delay:
+    #     for d in deployments:
+    #         logging.info(f'calling pull_deployment_charts after {deployment_charts_elapsed} seconds')
+    #         charts = pull_deployment_charts(org_id, billing_api_key, deployment_charts_index, d, now)
+    #         billing_payload.extend(charts)
+    #     deployment_charts_last_run = time()
+    
+    while now > current_date:
+        billing_payload = []
+
+        formatted_current_date = current_date.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        # TODO: Fix to end_date --> Done this trick because the API get the cumulated value and the to is "included"
+        formatted_end_date = (end_date - timedelta(seconds=1)).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        
+        params = {"from": formatted_current_date, "to": formatted_end_date}
+
+        print(params)
+
+ 
+
+        deployments = pull_deployments(org_id, billing_api_key, deployment_index, formatted_current_date, **params)
+       
+        billing_payload.extend(deployments)
+        billing_payload.append(pull_org_summary(org_id, org_summary_index, formatted_current_date, **params))
+        for d in deployments:
+            billing_payload.extend(pull_deployment_itemized(org_id, billing_api_key, deployment_itemized_index, d, formatted_current_date, **params))
+
+        if iteration == 0:
+            for d in deployments:
+                params = {"from": formatted_current_date}
+                charts = pull_deployment_charts(org_id, billing_api_key, deployment_charts_index, d, now, params=params)
+                billing_payload.extend(charts)
+
+        current_date = end_date 
+        end_date += granularity
+
+        if billing_payload:
+            logging.info('sending payload to bulk')
+            try:
+                helpers.bulk(es, billing_payload)
+            except BulkIndexError as bie:
+                print(json.dumps(bie.errors))
+                sys.exit(0)
+            logging.info('Bulk indexing complete')
+        
+        print(iteration)
+        iteration+=1
+
+
+
+        
+        sleep(1)
+    
+
 
 
 def main(billing_api_key, es, organization_delay, org_summary_index, deployment_inventory_delay, deployment_index, deployment_itemized_delay, deployment_itemized_index, deployment_charts_delay, deployment_charts_index):
@@ -322,7 +398,7 @@ def main(billing_api_key, es, organization_delay, org_summary_index, deployment_
             billing_payload.append(org_summary)
             organization_last_run = time()
 
-        # # get deployment itemized billing
+        # get deployment itemized billing
         deployment_itemized_elapsed = time() - deployment_itemized_last_run
         if deployment_itemized_elapsed >= deployment_itemized_delay:
             for d in deployments:
@@ -332,13 +408,13 @@ def main(billing_api_key, es, organization_delay, org_summary_index, deployment_
             deployment_itemized_last_run = time()
 
         # get deployment charts
-        deployment_charts_elapsed = time() - deployment_charts_last_run
-        if deployment_charts_elapsed >= deployment_charts_delay:
-            for d in deployments:
-                logging.info(f'calling pull_deployment_charts after {deployment_charts_elapsed} seconds')
-                charts = pull_deployment_charts(org_id, billing_api_key, deployment_charts_index, d, now)
-                billing_payload.extend(charts)
-            deployment_charts_last_run = time()
+        # deployment_charts_elapsed = time() - deployment_charts_last_run
+        # if deployment_charts_elapsed >= deployment_charts_delay:
+        #     for d in deployments:
+        #         logging.info(f'calling pull_deployment_charts after {deployment_charts_elapsed} seconds')
+        #         charts = pull_deployment_charts(org_id, billing_api_key, deployment_charts_index, d, now)
+        #         billing_payload.extend(charts)
+        #     deployment_charts_last_run = time()
 
 
         if billing_payload:
@@ -360,7 +436,7 @@ def main(billing_api_key, es, organization_delay, org_summary_index, deployment_
 
 if __name__ == '__main__':
 
-    logging.basicConfig(format='%(asctime)s:%(levelname)s:%(module)s:%(funcName)s:%(lineno)d:%(message)s', level=logging.DEBUG)
+    logging.basicConfig(format='%(asctime)s:%(levelname)s:%(module)s:%(funcName)s:%(lineno)d:%(message)s', level=logging.INFO)
     logging.info('Starting up')
 
     # ESS Billing
@@ -388,9 +464,11 @@ if __name__ == '__main__':
 
     # charts = pull_deployment_charts("2185109087", billing_api_key, deployment_charts_index, {"deployment_id": "12d4a46562aa4c7e809cb5b880314505", "deployment_name": "test"}, datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'))
 
+    fetch_historical_data(billing_api_key, es, org_summary_index, deployment_index, deployment_itemized_index, datetime(2023, 9, 1, 0, 0, 0, 0), timedelta(days=1))
+
     # print(charts)
     # Start main loop
-    main(billing_api_key, es, organization_delay, org_summary_index, deployment_inventory_delay, deployment_index, deployment_itemized_delay, deployment_itemized_index, deployment_charts_delay, deployment_charts_index)
+    # main(billing_api_key, es, organization_delay, org_summary_index, deployment_inventory_delay, deployment_index, deployment_itemized_delay, deployment_itemized_index, deployment_charts_delay, deployment_charts_index)
 
 
 
